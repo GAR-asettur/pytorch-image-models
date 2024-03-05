@@ -234,7 +234,7 @@ def load_pretrained(
                 classifier_bias = state_dict[classifier_name + '.bias']
                 state_dict[classifier_name + '.bias'] = classifier_bias[label_offset:]
 
-    load_result = model.load_state_dict(state_dict, strict=strict)
+    load_result = model.load_state_dict(state_dict, strict=False)
     if load_result.missing_keys:
         _logger.info(
             f'Missing keys ({", ".join(load_result.missing_keys)}) discovered while loading pretrained weights.'

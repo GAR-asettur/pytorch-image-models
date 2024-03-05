@@ -53,6 +53,25 @@ __all__ = ['VisionTransformer']  # model_registry will add each entrypoint fn to
 
 _logger = logging.getLogger(__name__)
 
+class TempScaling(nn.Module):
+    def __init__(self):
+        super(TempScaling,self).__init__()
+        self.temp=nn.Parameter(torch.ones(1) * 1.5)
+    def forward(self,logits):
+        return logits/self.temp
+class ETS(nn.Module):
+    def __init__(self,classes=1000):
+        super(ETS,self).__init__()
+        self.classes=classes
+        self.temp=TempScaling()
+        self.w1=nn.Parameter(torch.ones(1)*1.5)
+        self.w2=nn.Parameter(torch.ones(1)*1.5)
+        self.w3=nn.Parameter(torch.ones(1)*1.5)
+    def forward(self,probs):
+        self.w1.data=self.w1.data.clamp(0)
+        self.w2.data=self.w2.data.clamp(0)
+        self.w3.data=self.w3.data.clamp(0)
+        return (self.w1*probs + self.w2*self.temp(probs) + self.w3/self.classes) / (self.w1+self.w2+self.w3)
 
 class Attention(nn.Module):
     fused_attn: Final[bool]
@@ -80,7 +99,10 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
+        self.tempScale=False
+        self.ets=False
+        self.tempScaling=TempScaling()
+        self.ETS=ETS()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
@@ -95,7 +117,14 @@ class Attention(nn.Module):
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
+            if self.tempScale:
+                attn=self.tempScaling(attn)
+                attn = attn.softmax(dim=-1)
+            elif self.ets:
+                attn=self.ETS(attn)
+                attn = attn.softmax(dim=-1)
+            else:
+                attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
 
@@ -535,11 +564,16 @@ class VisionTransformer(nn.Module):
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head_drop = nn.Dropout(drop_rate)
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
+    
         if weight_init != 'skip':
             self.init_weights(weight_init)
         if fix_init:
             self.fix_init_weight()
+
+        self.tempScale=False
+        self.tempScaling=TempScaling()
+        self.ets=True
+        self.ETS=ETS()
 
     def fix_init_weight(self):
         def rescale(param, _layer_id):
@@ -703,6 +737,10 @@ class VisionTransformer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.forward_features(x)
         x = self.forward_head(x)
+        if self.tempScale:
+            x=self.tempScaling(x)
+        elif self.ets:
+            x=self.ETS(x)
         return x
 
 
